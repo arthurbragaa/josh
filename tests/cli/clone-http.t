@@ -84,4 +84,12 @@ Test josh clone via HTTP (with explicit filter argument)
   test
   $ cd ..
 
+Test the path syntax and inferred destination.
 
+  $ josh clone http://127.0.0.1:8001/real_repo.git --path subdir >/dev/null 2>&1
+
+  $ cd subdir
+  $ ls
+  test2
+  $ grep -qF 'http://127.0.0.1:8001/real_repo.git' .git/josh/remotes/origin.josh
+  $ cd ..

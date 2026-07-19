@@ -97,4 +97,29 @@
   
   1 directory, 2 files
 
+The path form produces the same projection and remote configuration.
 
+  $ cd ${TESTTMP}
+  $ josh clone remote/libs --path sub1 --into path-clone >/dev/null 2>&1
+  $ test "$(git -C libs rev-parse master)" = "$(git -C path-clone rev-parse HEAD)"
+  $ cmp libs/.git/josh/remotes/origin.josh path-clone/.git/josh/remotes/origin.josh
+
+Clone paths are validated.
+
+  $ josh clone remote/libs --path ../sub1 2>&1
+  Error: Clone path '../sub1' must be relative and remain inside the repository
+  Clone path '../sub1' must be relative and remain inside the repository
+  [1]
+  $ test ! -e sub1
+
+  $ josh clone remote/libs --path . >/dev/null 2>&1
+  [1]
+  $ josh clone remote/libs --path /sub1 >/dev/null 2>&1
+  [1]
+
+The path and filter forms cannot be combined.
+
+  $ josh clone remote/libs :/sub1 legacy-out --into ignored >/dev/null 2>&1
+  [2]
+  $ test ! -e legacy-out
+  $ test ! -e ignored

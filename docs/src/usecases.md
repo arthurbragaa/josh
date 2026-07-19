@@ -8,7 +8,7 @@ as individual repositories.
 
 Using the `josh` CLI:
 ```
-$ josh clone https://git.example.com/monorepo.git :/path/to/library ./library
+$ josh clone https://git.example.com/monorepo.git --path path/to/library
 ```
 
 Or via a shared [josh-proxy](./reference/proxy.md):
@@ -138,4 +138,3 @@ query {
 Even without using the more advanced features like partial cloning or workspaces,
 `josh-proxy` can act as a cache to reduce traffic between locations or keep your CI from
 performing many requests to the main git host.
-

@@ -94,4 +94,16 @@ Test josh clone via SSH (with explicit filter argument)
   test
   $ cd ..
 
+Test an SCP-style SSH URL with the path syntax.
 
+  $ export GIT_SSH_COMMAND="${GIT_SSH_COMMAND} -p 9001"
+  $ josh clone git@127.0.0.1:$(pwd)/repo1-bare.git --path subdir \
+  >     --into scp-clone >/dev/null 2>&1
+
+  $ cd scp-clone
+  $ ls
+  test2
+  $ cat test2
+  test
+  $ grep -qF 'git@127.0.0.1:' .git/josh/remotes/origin.josh
+  $ cd ..
