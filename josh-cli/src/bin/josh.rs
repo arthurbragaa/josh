@@ -9,6 +9,7 @@ use josh_cli::commands::link::LinkArgs;
 use josh_cli::commands::push::{PublishArgs, PushArgs};
 use josh_cli::commands::run::ComposeArgs;
 use josh_cli::commands::sync::SyncArgs;
+use josh_cli::commands::workspace::WorkspaceArgs;
 use josh_cli::config::{RemoteConfig, read_remote_config, write_remote_config};
 use josh_cli::forge::Forge;
 use josh_core::git::{normalize_repo_path, spawn_git_command};
@@ -66,6 +67,9 @@ pub enum RepoCommand {
 
     /// Run workspaces in containers
     Compose(ComposeArgs),
+
+    /// Manage workspaces
+    Workspace(WorkspaceArgs),
 }
 
 /// Commands that don't require a git repository
@@ -294,6 +298,9 @@ fn run_repo(cmd: &RepoCommand) -> anyhow::Result<()> {
         RepoCommand::Link(args) => josh_cli::commands::link::handle_link(args, &transaction),
         RepoCommand::Compose(args) => josh_cli::commands::run::handle_compose(args, &transaction),
         RepoCommand::Cache(args) => josh_cli::commands::cache::handle_cache(args, &transaction),
+        RepoCommand::Workspace(args) => {
+            josh_cli::commands::workspace::handle_workspace(args, &transaction)
+        }
     }
 }
 
