@@ -172,6 +172,32 @@ josh remote add backend https://github.com/myorg/monorepo.git :/services/backend
 
 ---
 
+## josh workspace
+
+Create a `workspace.josh` definition in the current repository:
+
+```shell
+josh workspace create <workspace-path> [--map <destination=source>]...
+```
+
+Each `--map` places a repository source path at a destination in the workspace. Existing workspace
+definitions are not overwritten. Use `--dry-run` to validate and display the definition without
+writing it.
+
+```shell
+josh workspace create application1 --map modules/lib1=library1
+```
+
+From inside a workspace, add another repository path:
+
+```shell
+josh workspace add library2 --as modules/lib2
+```
+
+`add` updates the nearest `workspace.josh`. If none exists, it creates one in the current directory.
+
+---
+
 ## josh filter
 
 Re-apply the filter for an existing remote to update the local filtered refs. Useful

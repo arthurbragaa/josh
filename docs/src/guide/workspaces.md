@@ -28,6 +28,21 @@ each application only want to see the code that's relevant to them.
 
 ## Creating a workspace
 
+From a monorepo checkout, create a workspace definition and map repository paths into it:
+
+```shell
+josh workspace create application1 --map modules/lib1=library1
+```
+
+This creates `application1/workspace.josh`. The file can also be edited directly.
+
+From inside a workspace, add another repository path:
+
+```shell
+cd application1
+josh workspace add library2 --as modules/lib2
+```
+
 Clone the monorepo scoped to `application1` using the `:workspace=` filter:
 
 ```shell
