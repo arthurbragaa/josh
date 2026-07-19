@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use anyhow::Context;
 use clap::Parser;
 
@@ -76,18 +78,40 @@ pub enum StandaloneCommand {
 }
 
 #[derive(Debug, clap::Parser)]
+#[command(
+    override_usage = "josh clone <URL> --path <PATH> [--into <DIRECTORY>] [OPTIONS]
+       josh clone <URL> <FILTER> <OUT> [OPTIONS]"
+)]
+#[command(group(
+    clap::ArgGroup::new("projection")
+        .required(true)
+        .args(["filter", "path"])
+))]
 pub struct CloneArgs {
     /// Remote repository URL
     #[arg()]
     pub url: String,
 
-    /// Workspace/projection identifier or path to spec
-    #[arg()]
-    pub filter: String,
+    /// Josh filter
+    #[arg(value_name = "FILTER", requires = "out")]
+    pub filter: Option<String>,
 
     /// Checkout directory
-    #[arg()]
-    pub out: std::path::PathBuf,
+    #[arg(value_name = "OUT", requires = "filter")]
+    pub out: Option<PathBuf>,
+
+    /// Repository path to project into the checkout
+    #[arg(long, value_name = "PATH", conflicts_with = "out")]
+    pub path: Option<String>,
+
+    /// Checkout directory; defaults to the final component of --path
+    #[arg(
+        long,
+        value_name = "DIRECTORY",
+        requires = "path",
+        conflicts_with_all = ["filter", "out"]
+    )]
+    pub into: Option<PathBuf>,
 
     /// Branch or ref to clone
     #[arg(short = 'b', long = "branch", default_value = "HEAD")]
@@ -221,8 +245,14 @@ fn run_standalone(cmd: &StandaloneCommand) -> anyhow::Result<()> {
 }
 
 fn run_repo(cmd: &RepoCommand) -> anyhow::Result<()> {
+    let resolved_clone = if let RepoCommand::Clone(args) = cmd {
+        Some(resolve_clone_args(args)?)
+    } else {
+        None
+    };
+
     // For clone, do the initial repo setup before creating transaction
-    let repo_path = if let RepoCommand::Clone(args) = cmd {
+    let repo_path = if let Some(args) = &resolved_clone {
         // For clone, we're not in a git repo initially, so clone first and use that path
         clone_repo(args)?
     } else {
@@ -263,7 +293,12 @@ fn run_repo(cmd: &RepoCommand) -> anyhow::Result<()> {
     let transaction = ctx.open().context("Failed TransactionContext::open")?;
 
     match cmd {
-        RepoCommand::Clone(args) => handle_clone(args, &transaction),
+        RepoCommand::Clone(_) => handle_clone(
+            resolved_clone
+                .as_ref()
+                .context("Clone arguments were not resolved")?,
+            &transaction,
+        ),
         RepoCommand::Fetch(args) => handle_fetch(args, &transaction),
         RepoCommand::Pull(args) => handle_pull(args, &transaction),
         RepoCommand::Push(args) => josh_cli::commands::push::handle_push(args, &transaction),
@@ -298,10 +333,14 @@ fn run_repo(cmd: &RepoCommand) -> anyhow::Result<()> {
 }
 
 fn to_absolute_remote_url(url: &str) -> anyhow::Result<String> {
+    let scp_like = url
+        .split_once(':')
+        .is_some_and(|(host, path)| host.contains('@') && !path.is_empty());
     if url.starts_with("http://")
         || url.starts_with("https://")
         || url.starts_with("ssh://")
         || url.starts_with("file://")
+        || scp_like
     {
         Ok(url.to_owned())
     } else {
@@ -315,8 +354,64 @@ fn to_absolute_remote_url(url: &str) -> anyhow::Result<String> {
     }
 }
 
+#[derive(Debug)]
+struct ResolvedCloneArgs {
+    url: String,
+    filter: String,
+    out: PathBuf,
+    branch: String,
+    forge_args: ForgeArgs,
+}
+
+fn clone_filter_from_path(path: &str) -> anyhow::Result<(String, PathBuf)> {
+    if path.is_empty() {
+        return Err(anyhow::anyhow!(
+            "Clone path must identify a repository directory"
+        ));
+    }
+
+    let parts = path.split('/').collect::<Vec<_>>();
+    if parts
+        .iter()
+        .any(|part| part.is_empty() || matches!(*part, "." | "..") || part.contains('\\'))
+    {
+        return Err(anyhow::anyhow!(
+            "Clone path '{}' must be relative and remain inside the repository",
+            path
+        ));
+    }
+
+    let destination = parts.last().copied().unwrap_or(path);
+    let filter = josh_core::filter::spec(josh_core::filter::Filter::new().subdir(path));
+    Ok((filter, PathBuf::from(destination)))
+}
+
+fn resolve_clone_args(args: &CloneArgs) -> anyhow::Result<ResolvedCloneArgs> {
+    let (filter, out) = if let Some(path) = &args.path {
+        let (filter, default_out) = clone_filter_from_path(path)?;
+        (filter, args.into.clone().unwrap_or(default_out))
+    } else {
+        (
+            args.filter
+                .clone()
+                .context("A filter or --path is required")?,
+            args.out
+                .clone()
+                .context("A checkout directory is required with a positional filter")?,
+        )
+    };
+
+    Ok(ResolvedCloneArgs {
+        url: args.url.clone(),
+        filter,
+        out,
+        branch: args.branch.clone(),
+        forge_args: args.forge_args.clone(),
+    })
+}
+
 /// Initial clone setup: create directory, init repo, add remote (no transaction needed)
-fn clone_repo(args: &CloneArgs) -> anyhow::Result<std::path::PathBuf> {
+fn clone_repo(args: &ResolvedCloneArgs) -> anyhow::Result<std::path::PathBuf> {
     // Use the provided output directory
     let output_dir = args.out.clone();
 
@@ -340,7 +435,7 @@ fn clone_repo(args: &CloneArgs) -> anyhow::Result<std::path::PathBuf> {
 }
 
 fn handle_clone(
-    args: &CloneArgs,
+    args: &ResolvedCloneArgs,
     transaction: &josh_core::cache::Transaction,
 ) -> anyhow::Result<()> {
     let repo = transaction.repo();
@@ -632,4 +727,94 @@ fn handle_filter(
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clone_path_becomes_filter_and_destination() {
+        let (filter, destination) = clone_filter_from_path("services/payments").unwrap();
+        assert_eq!(filter, ":/services/payments");
+        assert_eq!(destination, PathBuf::from("payments"));
+    }
+
+    #[test]
+    fn clone_path_is_one_filter_argument() {
+        let path = "services/payments:prefix=elsewhere";
+        let (filter, _) = clone_filter_from_path(path).unwrap();
+        let expected = josh_core::filter::Filter::new().subdir(path);
+
+        assert_eq!(josh_core::filter::parse(&filter).unwrap(), expected);
+    }
+
+    #[test]
+    fn clone_path_must_identify_a_relative_repository_directory() {
+        for path in [
+            "",
+            ".",
+            "../payments",
+            "/services/payments",
+            "services//payments",
+            "services/./payments",
+            "services/../payments",
+            "services/payments/",
+            "services\\payments",
+        ] {
+            assert!(clone_filter_from_path(path).is_err());
+        }
+    }
+
+    #[test]
+    fn clone_accepts_remote_url_formats() {
+        for url in [
+            "https://github.com/acme/platform.git",
+            "ssh://git@github.com/acme/platform.git",
+            "git@github.com:acme/platform.git",
+        ] {
+            assert_eq!(to_absolute_remote_url(url).unwrap(), url);
+        }
+    }
+
+    #[test]
+    fn clone_parser_accepts_both_forms() {
+        let positional = Cli::try_parse_from(["josh", "clone", "remote", ":/path", "out"]);
+        assert!(positional.is_ok());
+
+        let path = Cli::try_parse_from(["josh", "clone", "remote", "--path", "services/payments"]);
+        assert!(path.is_ok());
+
+        let into = Cli::try_parse_from([
+            "josh",
+            "clone",
+            "remote",
+            "--path",
+            "services/payments",
+            "--into",
+            "payments",
+        ]);
+        assert!(into.is_ok());
+    }
+
+    #[test]
+    fn clone_parser_rejects_mixed_forms() {
+        for args in [
+            vec!["josh", "clone", "remote", "--into", "out"],
+            vec![
+                "josh",
+                "clone",
+                "remote",
+                ":/path",
+                "out",
+                "--path",
+                "services/payments",
+            ],
+            vec![
+                "josh", "clone", "remote", ":/path", "out", "--into", "ignored",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err());
+        }
+    }
 }

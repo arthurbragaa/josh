@@ -13,22 +13,22 @@ cargo install josh-cli --locked --git https://github.com/josh-project/josh.git
 
 ## josh clone
 
-Clone a repository, optionally applying a filter projection.
+Clone a repository path:
 
-```
-josh clone <url> <filter> <out> [options]
+```shell
+josh clone <url> --path <repository-path> [--into <directory>] [options]
 ```
 
 | Argument | Description |
 |----------|-------------|
-| `<url>`  | Remote repository URL (HTTPS, SSH, or local path) |
-| `<filter>` | [Filter spec](./filters.md) to apply (e.g. `:/docs`, `:workspace=workspaces/myproject`) |
-| `<out>`  | Local directory to clone into |
+| `<url>` | Remote repository URL |
 
 **Options:**
 
 | Flag | Description |
 |------|-------------|
+| `--path <path>` | Path to check out |
+| `--into <directory>` | Destination directory (defaults to the final component of `--path`) |
 | `-b`, `--branch <ref>` | Branch or ref to clone (default: `HEAD`) |
 | `--forge <name>` | Forge integration to use (e.g. `github`) |
 | `--no-forge` | Disable forge integration |
@@ -36,9 +36,12 @@ josh clone <url> <filter> <out> [options]
 **Examples:**
 
 ```shell
-# Clone only the docs/ subdirectory
-josh clone https://github.com/josh-project/josh.git :/docs ./josh-docs
+josh clone https://github.com/acme/platform.git --path services/payments
+```
 
+Clone with a filter:
+
+```shell
 # Clone a workspace projection
 josh clone https://github.com/myorg/monorepo.git :workspace=workspaces/frontend ./frontend
 

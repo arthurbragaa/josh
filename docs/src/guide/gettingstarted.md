@@ -13,21 +13,20 @@ cargo install josh-cli --locked --git https://github.com/josh-project/josh.git
 
 ## Cloning a repository
 
-`josh clone` is similar to `git clone` but takes two required arguments after the URL:
-a [filter](../reference/filters.md) and a local destination path. Unlike `git clone`,
-the destination path is always required and cannot be inferred from the URL.
+`josh clone` can check out a repository subdirectory as its own repository.
 
-For example, let's clone just the documentation folder of the Josh repository:
+Clone the documentation directory of the Josh repository:
 
 ```shell
-josh clone https://github.com/josh-project/josh.git :/docs ./josh-docs
+josh clone https://github.com/josh-project/josh.git --path docs
 ```
 
-The filter `:/docs` tells Josh to check out only the contents of the `docs/` subdirectory.
-The resulting repository will contain only the files from that folder and only the commits
-that touch them — as if that subdirectory had always been its own repository.
+`--path docs` tells Josh to check out only the contents of the `docs/` subdirectory. The checkout
+directory defaults to the final path component (`docs` in this example).
+The resulting repository contains only the files from that folder and only the commits that touch
+them—as if that subdirectory had always been its own repository.
 
-To clone a repository without any filter (equivalent to a plain `git clone`):
+To use a [filter](../reference/filters.md) directly:
 
 ```shell
 josh clone https://github.com/josh-project/josh.git :/ ./josh
