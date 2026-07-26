@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+
+echo "Installing system dependencies"
+sudo apt-get update
+sudo apt-get install -y --no-install-recommends \
+    build-essential \
+    ca-certificates \
+    cmake \
+    curl \
+    git \
+    gnupg \
+    libssl-dev \
+    pkg-config \
+    uidmap
+sudo rm -rf /var/lib/apt/lists/*
+
+echo "Installing the Rust toolchain"
+if [[ ! -x "$HOME/.cargo/bin/rustup" ]]; then
+    curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs \
+        | sh -s -- -y --profile minimal --no-modify-path
+fi
+export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
+toolchain="$(sed -n 's/^channel = "\([^"]*\)"/\1/p' "$repo_root/rust-toolchain.toml")"
+"$HOME/.cargo/bin/rustup" toolchain install "$toolchain" \
+    --profile minimal \
+    --component rustfmt
+
+profile_marker="# Josh orb toolchain"
+if ! grep -Fqx "$profile_marker" "$HOME/.bash_profile" 2>/dev/null; then
+    cat >> "$HOME/.bash_profile" <<'EOF'
+
+# Josh orb toolchain
+export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
+export JOSH_EXPERIMENTAL_FEATURES=1
+EOF
+fi
+if ! grep -Fqx 'export JOSH_EXPERIMENTAL_FEATURES=1' "$HOME/.bash_profile"; then
+    echo 'export JOSH_EXPERIMENTAL_FEATURES=1' >> "$HOME/.bash_profile"
+fi
+
+echo "Installing the CI-pinned Podman toolchain"
+if ! podman --version 2>/dev/null | grep -Fq '5.8.2'; then
+    GITHUB_WORKSPACE="$repo_root" "$repo_root/.github/workflows/scripts/install-podman.sh"
+fi
+podman_prefix=/opt/podman-5.8.2
+sudo mkdir -p /usr/local/lib/podman
+for helper in aardvark-dns catatonit conmon netavark rootlessport; do
+    sudo ln -sfn \
+        "$podman_prefix/usr/local/lib/podman/$helper" \
+        "/usr/local/lib/podman/$helper"
+done
+for config in policy.json registries.conf seccomp.json storage.conf; do
+    sudo install -m 0644 \
+        "$podman_prefix/etc/containers/$config" \
+        "/etc/containers/$config"
+done
+if [[ -e /dev/net/tun ]]; then
+    sudo chmod 0666 /dev/net/tun
+fi
+
+echo "Building the Josh CLI"
+cd "$repo_root"
+cargo build --locked --release -p josh-cli
+mkdir -p "$HOME/.local/bin"
+ln -sfn "$repo_root/target/release/josh" "$HOME/.local/bin/josh"
+
+echo "Configuring the fork contribution workflow"
+if ! git remote get-url upstream >/dev/null 2>&1; then
+    git remote add upstream https://github.com/josh-project/josh
+fi
+git config remote.pushDefault origin
+git config push.default current
+git config --unset-all remote.upstream.pushurl 2>/dev/null || true
+git config --add remote.upstream.pushurl DISABLED
+git fetch upstream master
+
+hooks_dir="$(git rev-parse --path-format=absolute --git-common-dir)/hooks"
+mkdir -p "$hooks_dir"
+
+cat > "$hooks_dir/pre-commit" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+if [[ "$branch" != "amp-orb" ]]; then
+    exit 0
+fi
+
+disallowed="$(
+    git diff --cached --name-only --diff-filter=ACMR \
+        | awk '$0 !~ /^\.agents\// && $0 !~ /^\.amp\//'
+)"
+if [[ -n "$disallowed" ]]; then
+    cat >&2 <<MSG
+Commit rejected: amp-orb is only for orb configuration.
+
+Create a feature branch from upstream/master before changing project files:
+  git fetch upstream
+  git switch -c <feature-name> upstream/master
+
+Disallowed staged paths:
+$disallowed
+MSG
+    exit 1
+fi
+EOF
+chmod +x "$hooks_dir/pre-commit"
+
+cat > "$hooks_dir/pre-push" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+remote_name="$1"
+zero=0000000000000000000000000000000000000000
+upstream_ref=refs/remotes/upstream/master
+
+if [[ "$remote_name" == "upstream" ]]; then
+    echo "Push rejected: upstream is fetch-only; push contribution branches to origin." >&2
+    exit 1
+fi
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+    if [[ "$local_sha" == "$zero" ]]; then
+        continue
+    fi
+
+    if [[ "$remote_ref" == "refs/heads/amp-orb" ]]; then
+        if [[ "$remote_name" != "origin" ]]; then
+            echo "Push rejected: amp-orb may only be pushed to origin." >&2
+            exit 1
+        fi
+        continue
+    fi
+
+    if [[ "$remote_ref" == "refs/heads/master" ]] \
+        && [[ "$local_sha" != "$(git rev-parse "$upstream_ref")" ]]; then
+        echo "Push rejected: master must exactly match upstream/master." >&2
+        exit 1
+    fi
+
+    base="$(git merge-base "$local_sha" "$upstream_ref" 2>/dev/null || true)"
+    if [[ -z "$base" ]]; then
+        echo "Push rejected: branch is not based on upstream/master." >&2
+        exit 1
+    fi
+
+    if ! git diff --quiet "$base" "$local_sha" -- .agents .amp; then
+        cat >&2 <<MSG
+Push rejected: this branch contains fork-only orb configuration.
+
+Create a clean branch from upstream/master and cherry-pick only the product commits.
+Orb configuration may only be pushed to origin/amp-orb.
+MSG
+        exit 1
+    fi
+done
+EOF
+chmod +x "$hooks_dir/pre-push"
+
+mkdir -p "$HOME/.config/amp"
+agent_marker="# Josh fork contribution workflow"
+if ! grep -Fqx "$agent_marker" "$HOME/.config/amp/AGENTS.md" 2>/dev/null; then
+    cat >> "$HOME/.config/amp/AGENTS.md" <<'EOF'
+
+# Josh fork contribution workflow
+
+- `amp-orb` is only the bootstrap branch. Do not make product changes on it.
+- Before changing project code, fetch `upstream` and create a descriptive feature branch from
+  `upstream/master`, never from `amp-orb`.
+- Push only to `origin`; the `upstream` remote is fetch-only.
+- Never include `.agents/**` or `.amp/**` in an upstream contribution.
+- Keep `origin/master` identical to `upstream/master`.
+EOF
+fi
+
+echo "Orb setup complete"
